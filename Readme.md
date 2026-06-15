@@ -1,51 +1,39 @@
-# Autonomous Space Debris Tracker & Safety Analyst
+# Autonomous Space Spacing & Conjunction Engine
 
-A high-performance Python-based space monitoring architecture designed to track active satellites and analyze real-time orbital hazard zones using international telemetry data and advanced AI analysis.
-
----
-
-##  The Vision
-Space congestion is one of the biggest challenges for future interplanetary travel and satellite constellations like Starlink. This project was built to simulate an automated, independent defense and observation layer that:
-1. Fetches live satellite telemetry.
-2. Cross-references live positions with international Space Debris databases.
-3. Automatically maps potential hazard sectors.
-4. Leverages **xAI's Grok API** to generate instantaneous safety assessment reports.
+A high-performance, physics-driven Python architecture designed to track active satellite constellations and compute real-time 3D orbital hazard zones using standard SGP4 propagation modeling and advanced AI telemetry decoding.
 
 ---
 
-##  System Architecture & Features
+## The Vision
+With thousands of active satellites in Low Earth Orbit (LEO), space congestion and orbital debris management have become critical infrastructure challenges. This project simulates an independent, automated mission control layer that:
+1. Fetches live **Two-Line Element (TLE)** orbital parameters directly from NORAD/Celestrak databases.
+2. Propagates exact, real-time satellite positions utilizing the **SGP4 mathematical model**.
+3. Evaluates true **3D Euclidean Distance Matrices** to detect proximity threat profiles.
+4. Integrates with **xAI's Grok API** to generate automated aerospace safety briefs.
 
-### 1. Live Telemetry Pipeline
-The backend establishes an active connection with space tracking endpoints to pull exact coordinates, altitude, and current velocity of orbital assets.
+---
 
-### 2. CelesTrak Database Integration (Space Debris Engine)
-The system queries live datasets from CelesTrak to fetch the positions of historical orbital debris (e.g., fragments from historical space collisions). It automatically calculates a **300KM Proximity Hazard Zone** around each debris element.
+## System Architecture & Features
+
+### 1. High-Fidelity SGP4 Propagation Engine
+Unlike basic API parsers, this system computes the exact Latitude, Longitude, and Altitude of orbital assets at any precise microsecond. It uses the industry-standard SGP4 analytical model to factor in atmospheric drag and orbital perturbations.
+
+### 2. Multi-Node Threat Cross-Referencing
+The pipeline concurrently ingests telemetry vectors for active satellite constellations (e.g., Starlink) and historical space junk clusters (e.g., Cosmos-2251 Debris). It dynamically flags close-approach alerts based on a highly accurate spatial distance matrix.
 
 ### 3. Dynamic Visual Mapping Layer
-Using geographical mapping libraries, the system generates an interactive, high-fidelity visual dashboard (`satellite_track.html`) plotting both the asset and nearby danger vectors locally without any external overhead.
+Using advanced geospatial libraries, the system auto-compiles an interactive dark-theme map dashboard (`advanced_space_density_map.html`). It plots precise satellite positions and draws automated threat vectors (dashed danger indicators) between intersecting paths.
 
-### 4. Automated AI Safety Reports (Powered by xAI Grok)
-The architecture is designed to pack the raw coordinate data, proximity telemetry, and hazard density, and pass it to **xAI's Grok API (`grok-4.3`)**. Grok acts as the automated space scientist, evaluating whether the orbital path requires a collision avoidance maneuver.
+### 4. xAI Grok Control Payload
+The architecture securely formats the computed close-approach dataset and streams it into the **xAI Grok API (`grok-beta`)**. Acting as an automated Orbital Dynamics Commander, the AI analyzes the telemetry and drafts standard collision avoidance maneuver recommendations.
 
 ---
 
 ## How to Run (Bring Your Own API Key)
 
-This project is built using an open-source architecture with a zero-budget development model. It does not hardcode any sensitive credentials. Users can bring their own computing environment and xAI infrastructure to run the full pipeline.
+This infrastructure is 100% open-source, lightweight, and built entirely on a mobile development environment—proving complex aerospace data pipelines can be deployed anywhere.
 
 ### Prerequisites
-Ensure you have Python installed, then set up the required dependencies:
+Ensure you have Python installed, then set up the required mathematical and structural dependencies:
 ```bash
-pip install requests folium openai
-
-Configuration
-​Set your official xAI API Key in your environment variables:
-	
-	export XAI_API_KEY="your_grok_api_key_here"
-
-Execution
-​Run the core pipeline processor:
-	python space_tracker.py
-	
-Note: If no XAI_API_KEY is provided, the system will gracefully degrade to Local Map Mode, successfully plotting the satellite_track.html mapping dashboard while skipping the AI text analysis.
-
+pip install requests folium numpy sgp4 openai
