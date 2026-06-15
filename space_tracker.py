@@ -1,148 +1,173 @@
 import os
 import requests
 import folium
+import numpy as np
+from datetime import datetime, timezone
+from sgp4.api import Satrec, WGS84, jday
 from openai import OpenAI
 
-# 1. xAI Client Initialize
+# 1. xAI Client Initialization
 XAI_API_KEY = os.environ.get("XAI_API_KEY")
+client = OpenAI(api_key=XAI_API_KEY, base_url="https://api.x.ai/v1") if XAI_API_KEY else None
 
-client = None
-if XAI_API_KEY:
-    client = OpenAI(
-        api_key=XAI_API_KEY,
-        base_url="https://api.x.ai/v1",
-    )
+def get_satellite_position_now(sat_rec):
+    """
+    Calculate real-time satellite Lat, Lon and Alt using SGP4 model for current second.
+    """
+    now = datetime.now(timezone.utc)
+    # Compute real-time current Julian Date
+    jd, fr = jday(now.year, now.month, now.day, now.hour, now.minute, now.second + now.microsecond/1e6)
 
-def fetch_live_satellite_data():
-    """Live Satellite data fetch function (Free Public API)"""
-    print("Fetching live space data from API...")
-    try:
-        url = "https://api.wheretheiss.at/v1/satellites/25544"
-        response = requests.get(url)
-        if response.status_code == 200:
-            return response.json()
-        print("Failed to fetch data from Space API.")
-        return None
-    except Exception as e:
-        print(f"Error fetching space data: {e}")
+    # SGP4 engine standard propagation (Position in km, Velocity)
+    e, r, v = sat_rec.sgp4(jd, fr)
+    if e!= 0:
         return None
 
-def fetch_space_debris_data():
-    print("Fetching nearby Space Debris data...")
+    x, y, z = r[0], r[1], r[2]
+    r_mag = np.sqrt(x**2 + y**2 + z**2)
+
+    lat = np.degrees(np.arcsin(z / r_mag))
+    lon = np.degrees(np.arctan2(y, x))
+    alt = r_mag - 6378.137 # Subtract Earth radius
+
+    return {"latitude": lat, "longitude": lon, "altitude": alt, "x": x, "y": y, "z": z}
+
+def fetch_and_parse_celestrak_group(group_name):
+    print(f"Fetching Live Orbital Elements for '{group_name}' from Celestrak...")
+    url = f"https://celestrak.org/NORAD/elements/gp.php?GROUP={group_name}&FORMAT=tle"
     try:
-        url = "https://celestrak.org/NORAD/elements/gp.php?GROUP=cosmos-2251-debris&FORMAT=json"
-        response = requests.get(url)
-        
-        if response.status_code == 200:
-            raw_debris = response.json()[:3]
-            return raw_debris
-        return []
+        response = requests.get(url, timeout=15)
+        if response.status_code!= 200:
+            return []
+
+        lines = response.text.strip().split('\n')
+        satellites = []
+
+        for i in range(0, len(lines) - 2, 3):
+            name = lines[i].strip()
+            line1 = lines[i+1].strip()
+            line2 = lines[i+2].strip()
+
+            sat_rec = Satrec.twoline2rv(line1, line2)
+            satellites.append({"name": name, "rec": sat_rec})
+
+        return satellites
     except Exception as e:
-        print(f"Warning: Could not fetch debris data, skipping. ({e})")
+        print(f"Error fetching group {group_name}: {e}")
         return []
 
-def create_interactive_map(sat_data, debris_list):
-    
-    if not sat_data:
+def calculate_dynamic_density_and_conjunctions(starlink_list, debris_list, threshold_km=1500.0):
+    print("Calculating Real-time Dynamic 3D Spacing Matrix...")
+    dangerous_conjunctions = []
+    active_starlinks_pos = []
+
+    for s in starlink_list[:60]: # Processing subset for speed optimization
+        pos = get_satellite_position_now(s['rec'])
+        if pos:
+            pos['name'] = s['name']
+            active_starlinks_pos.append(pos)
+
+    for d in debris_list[:40]:
+        d_pos = get_satellite_position_now(d['rec'])
+        if not d_pos:
+            continue
+
+        for s_pos in active_starlinks_pos:
+            # Mathematical 3D Vector Distance
+            dist = np.sqrt((s_pos['x'] - d_pos['x'])**2 +
+                           (s_pos['y'] - d_pos['y'])**2 +
+                           (s_pos['z'] - d_pos['z'])**2)
+
+            if dist < threshold_km:
+                dangerous_conjunctions.append({
+                    "satellite": s_pos['name'],
+                    "debris": d['name'],
+                    "distance_km": round(dist, 2),
+                    "sat_coords": (s_pos['latitude'], s_pos['longitude']),
+                    "deb_coords": (d_pos['latitude'], d_pos['longitude'])
+                })
+
+    return active_starlinks_pos, dangerous_conjunctions
+
+def generate_next_level_map(starlinks, conjunctions):
+    if not starlinks:
+        print("No live coordinates available to map.")
         return
-    
-    sat_lat = sat_data['latitude']
-    sat_lon = sat_data['longitude']
-    
-    print(f"Satellite Coordinates: Lat {sat_lat}, Lon {sat_lon}")
-    print(" Generating Interactive World Map with Debris Zones...")
-    
-    tile_style = "OpenStreetMap"
-    mymap = folium.Map(location=[sat_lat, sat_lon], zoom_start=3, tiles=tile_style)
 
-    # 1. LIVE SATELLITE MARKER (Red Color)
-    sat_info = f"Satellite Live<br>Speed: {round(sat_data['velocity'],2)} km/h"
-    folium.Marker(
-        location=[sat_lat, sat_lon],
-        popup=sat_info,
-        icon=folium.Icon(color="red", icon="fullscreen", prefix="fa")
-    ).add_to(mymap)
+    print("Compiling Interactive Autonomous Space Density Map...")
+    mymap = folium.Map(location=[0, 0], zoom_start=2, tiles="CartoDB dark_matter")
 
-    # 2. SPACE DEBRIS MARKERS (Orange/Black Color
-    offset = 5.0
-    for i, debris in enumerate(debris_list):
-        debris_lat = sat_lat + (offset * (i + 1)) if sat_lat + (offset * (i + 1)) < 90 else sat_lat
-        debris_lon = sat_lon - (offset * (i + 1)) if sat_lon - (offset * (i + 1)) > -180 else sat_lon
-        
-        debris_name = debris.get('OBJECT_NAME', f'Unknown Debris #{i+1}')
-        debris_id = debris.get('OBJECT_ID', 'N/A')
-        
-        folium.Marker(
-            location=[debris_lat, debris_lon],
-            popup=f"DEBRIS: {debris_name}<br>ID: {debris_id}",
-            icon=folium.Icon(color="orange", icon="trash", prefix="fa")
-        ).add_to(mymap)
-        
-        folium.Circle(
-            location=[debris_lat, debris_lon],
-            radius=300000, # 300 KM danger radius
-            color="yellow",
+    # Live Starlink Positioning
+    for s in starlinks:
+        folium.CircleMarker(
+            location=[s['latitude'], s['longitude']],
+            radius=3,
+            color="#00D2FF",
             fill=True,
-            fill_opacity=0.2
+            popup=f"Starlink: {s['name']}<br>Alt: {round(s['altitude'], 2)} km"
         ).add_to(mymap)
 
-    mymap.save("satellite_track.html")
-    print("Success! Map with Debris integrated saved as satellite_track.html")
+    # Threat Vector Mapping
+    for conj in conjunctions:
+        folium.Marker(
+            location=conj['deb_coords'],
+            popup=f"DEBRIS TRACE: {conj['debris']}<br>Distance: {conj['distance_km']} km to {conj['satellite']}",
+            icon=folium.Icon(color="red", icon="info-sign")
+        ).add_to(mymap)
 
-def analyze_with_grok(satellite_data, debris_list):
-    """Grok API Analysis with Debris Safety Check"""
+        folium.PolyLine(
+            locations=[conj['sat_coords'], conj['deb_coords']],
+            color="red",
+            weight=1.5,
+            dash_array="5, 5"
+        ).add_to(mymap)
+
+    mymap.save("advanced_space_density_map.html")
+    print("Success! Advanced Map saved as 'advanced_space_density_map.html'")
+
+def grok_orbital_mechanics_analysis(conjunctions):
     if not client:
-        return "[LOCAL MODE]: Grok analysis skipped. Add your XAI_API_KEY to secrets to enable."
+        return "[LOCAL MODE]: XAI_API_KEY not found. Telemetry logging complete."
 
-    print("Sending Telemetry + Debris data to xAI Grok for safety analysis...")
-    
-    full_space_report = {
-        "active_satellite": satellite_data,
-        "detected_debris_count": len(debris_list),
-        "debris_samples": [d.get('OBJECT_NAME', 'Unknown') for d in debris_list]
-    }
+    print("Transmitting Spatial Coordinates to xAI Grok Control Engine...")
 
     prompt = f"""
-    You are Grok, an expert aerospace AI developed by xAI. 
-    Analyze this combined real-time data of an active satellite and nearby space debris objects.
-    Provide a professional but easy-to-read safety assessment report for a 19-year-old developer.
-    Mention if there is any collision risk in the current sector based on the coordinates.
-    
-    Data: {str(full_space_report)}
+    You are Grok, an elite Aerospace Engineer at xAI Mission Control.
+    Review this real-time SGP4 analytical data representing satellite space tracking vectors.
+    Identify potential spatial optimizations or close-approach anomalies.
+
+    Dataset:
+    {str(conjunctions[:3])}
+
+    Provide an engineering summary detailing current vector safety indices and telemetry health.
     """
 
     try:
         response = client.chat.completions.create(
-            model="grok-4.3",
+            # Using current active API model
+            model="grok-beta",
             messages=[
-                {"role": "system", "content": "You are Grok, a master space debris tracker and collision avoidance AI."},
+                {"role": "system", "content": "You are Grok, an elite Aerospace Engineer and Orbital Dynamics Commander."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.3
+            temperature=0.2
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"Grok API Error: {e}"
+        return f"Grok API Telemetry Error: {e}"
 
-# --- MAIN EXECUTION ---
 if __name__ == "__main__":
-    print(" Starting Starlink/ISS Tracker & Space Debris Analyzer...")
-    print("-" * 50)
+    print("INITIALIZING GENUINE ORBITAL MECHANICS ENGINE\n")
+    starlink_network = fetch_and_parse_celestrak_group("starlink")
+    cosmos_debris = fetch_and_parse_celestrak_group("cosmos-2251-debris")
 
-    # 1. Fetch data from both pipelines
-    space_data = fetch_live_satellite_data()
-    debris_data = fetch_space_debris_data()
+    if starlink_network and cosmos_debris:
+        live_starlinks, close_calls = calculate_dynamic_density_and_conjunctions(starlink_network, cosmos_debris)
+        print(f"\nProcessing Complete. Active Starlinks Mapped: {len(live_starlinks)}. Dynamic Threat Vectors: {len(close_calls)}.")
+        generate_next_level_map(live_starlinks, close_calls)
 
-    if space_data:
-        print(f"\nTelemetry Secured. Found {len(debris_data)} trackable debris elements in DB.")
-        
-        # 2. Generate Advanced Map
-        create_interactive_map(space_data, debris_data)
-        print("-" * 50)
-
-        # 3. Grok AI Safety Analysis
-        analysis_report = analyze_with_grok(space_data, debris_data)
-        print("\n[GROK SPACE SAFETY REPORT]:")
-        print(analysis_report)
+        grok_report = grok_orbital_mechanics_analysis(close_calls)
+        print("\n[GROK MISSION CONTROL TELEMETRY BRIEF]:")
+        print(grok_report)
     else:
-        print("Could not process further without telemetry data.")
+        print("Failed to sync with NORAD/Celestrak database.")       
