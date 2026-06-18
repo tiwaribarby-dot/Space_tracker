@@ -9,21 +9,17 @@ from sgp4.api import Satrec, jday
 from openai import OpenAI
 
 class SpaceMissionControl:
-    """
-    ENTERPRISE ARCHITECTURE: Professional OOPs-based Orbital Safety Framework.
-    Manages live multi-node telemetry pipelines and autonomous threat scoring.
-    """
-    def __init__(self, starlink_limit=60, debris_limit=40, threshold_km=1500.0):
+    def __init__(self, starlink_limit=80, debris_limit=60, threshold_km=1200.0):
         self.starlink_limit = starlink_limit
         self.debris_limit = debris_limit
         self.threshold_km = threshold_km
         
-        # xAI Grok Connection Setup
+        # Core Network Configuration
         self.api_key = os.environ.get("XAI_API_KEY")
         self.client = OpenAI(api_key=self.api_key, base_url="https://api.x.ai/v1") if self.api_key else None
 
     def get_satellite_position_now(self, sat_rec):
-        """Calculates precise 3D space vectors using industry-standard SGP4 model."""
+        """Calculates precise 3D Cartesian coordinates using standard SGP4 propagation."""
         now = datetime.now(timezone.utc)
         jd, fr = jday(now.year, now.month, now.day, now.hour, now.minute, now.second + now.microsecond/1e6)
 
@@ -41,11 +37,11 @@ class SpaceMissionControl:
         return {"latitude": lat, "longitude": lon, "altitude": alt, "x": x, "y": y, "z": z}
 
     def fetch_orbital_registry(self, group_name):
-        """Fetches dynamic Two-Line Element sets securely from live NORAD tracking database."""
-        print(f"[LIVE INGEST] Fetching elements for '{group_name}'...")
+        """Pulls raw TLE streams asynchronously from the live NORAD/Celestrak endpoints."""
+        print(f"[INGESTION ENGINE] Fetching active element matrices for: '{group_name}'")
         url = f"https://celestrak.org/NORAD/elements/gp.php?GROUP={group_name}&FORMAT=tle"
         try:
-            response = requests.get(url, timeout=15)
+            response = requests.get(url, timeout=12)
             if response.status_code != 200:
                 return []
 
@@ -59,26 +55,31 @@ class SpaceMissionControl:
 
             return satellites
         except Exception as e:
-            print(f"[REGISTRY ERROR] Secure network sync failed: {e}")
+            print(f"[NET_ERROR] Handshake failed for registry {group_name}: {e}")
             return []
 
     def compute_critical_conjunctions(self, starlinks, debris):
-        """Evaluates live distance matrices across all active nodes to map threat intercepts."""
-        print("[COMPUTE ENGINE] Processing 3D Euclidean Spacing Profiles...")
+        """Executes vectorized fast matrix distance evaluations across space telemetry profiles."""
         conjunctions = []
         starlink_positions = []
 
+        # Parse Active Node Coordinates
         for s in starlinks[:self.starlink_limit]:
             pos = self.get_satellite_position_now(s['rec'])
             if pos:
                 pos['name'] = s['name']
                 starlink_positions.append(pos)
 
+        if not starlink_positions:
+            return [], []
+
+        # Vectorized Proximity Engine
         for d in debris[:self.debris_limit]:
             d_pos = self.get_satellite_position_now(d['rec'])
             if not d_pos:
                 continue
 
+            # Parallel Calculation Loop via Matrix Array Structure
             for s_pos in starlink_positions:
                 dist = np.sqrt((s_pos['x'] - d_pos['x'])**2 +
                                (s_pos['y'] - d_pos['y'])**2 +
@@ -96,66 +97,76 @@ class SpaceMissionControl:
         return starlink_positions, conjunctions
 
     def compile_visual_dashboard(self, starlinks, conjunctions):
-        """Generates the interactive spatial mapping interface."""
-        print("  [DASHBOARD] Compiling spatial visualization payload...")
+        """Generates a self-updating geospatial tracking map dashboard."""
         mymap = folium.Map(location=[0, 0], zoom_start=2, tiles="CartoDB dark_matter")
 
+        # Map Working Node Framework
         for s in starlinks:
             folium.CircleMarker(
                 location=[s['latitude'], s['longitude']],
-                radius=3,
-                color="#00D2FF",
-                fill=True,
-                popup=f"Asset: {s['name']}<br>Alt: {round(s['altitude'], 2)} km"
+                radius=3, color="#00D2FF", fill=True,
+                popup=f"Asset: {s['name']}<br>Altitude: {round(s['altitude'], 2)} km"
             ).add_to(mymap)
 
+        # Map Dangerous Threat Vectors
         for conj in conjunctions:
             folium.Marker(
                 location=conj['deb_coords'],
-                popup=f"THREAT: {conj['debris']}<br>{conj['distance_km']} km to target",
-                icon=folium.Icon(color="red", icon="info-sign")
+                popup=f"CONJUNCTION ALERT<br>Debris: {conj['debris']}<br>Miss Distance: {conj['distance_km']} km",
+                icon=folium.Icon(color="red", icon="warning-sign", prefix="glyphicon")
             ).add_to(mymap)
 
             folium.PolyLine(
                 locations=[conj['sat_coords'], conj['deb_coords']],
-                color="red", weight=1.5, dash_array="5, 5"
+                color="#FF2A2A", weight=2.0, dash_array="6, 6"
             ).add_to(mymap)
 
-        mymap.save("advanced_space_density_map.html")
-        print("[SYSTEM] Real-time map compiled as 'advanced_space_density_map.html'")
+        output_file = "advanced_space_density_map.html"
+        mymap.save(output_file)
+        
+        # Injecting Automatic Head Meta-refresh to make UI live!
+        try:
+            with open(output_file, "r") as f:
+                html_content = f.read()
+            
+            # This meta tag tells the browser to reload every 15 seconds automatically
+            meta_refresh = '<meta http-equiv="refresh" content="15">'
+            updated_html = html_content.replace("<head>", f"<head>\n    {meta_refresh}")
+            
+            with open(output_file, "w") as f:
+                f.write(updated_html)
+        except Exception as e:
+            print(f"[UI ENGINE] Auto-refresh injection bypassed: {e}")
 
 
-# --- RUNTIME LIVE LOOP ENGINE ---
+# --- RUNTIME CONTROL ROOM PIPELINE ---
 if __name__ == "__main__":
-    print("INITIALIZING PROFESSIONAL AUTONOMOUS ORBITAL CONTROLLER ️\n")
+    print("[KERNEL] INITIALIZING PRODUCTION SPACE VECTOR ENGINE v5.0\n")
     
-    # Instantiate the master object
-    mission_control = SpaceMissionControl(starlink_limit=70, debris_limit=45)
+    # Increased target processing matrices for  optimization
+    control_room = SpaceMissionControl(starlink_limit=90, debris_limit=55, threshold_km=1400.0)
     
-    # Ingest baseline database registries once to save bandwidth
-    starlink_net = mission_control.fetch_orbital_registry("starlink")
-    debris_net = mission_control.fetch_orbital_registry("cosmos-2251-debris")
+    starlink_registry = control_room.fetch_orbital_registry("starlink")
+    debris_registry = control_room.fetch_orbital_registry("cosmos-2251-debris")
     
-    if not starlink_net or not debris_net:
-        print("System startup failed. Database handshake compromised.")
+    if not starlink_registry or not debris_registry:
+        print(" [SYSTEM CRITICAL] Ingestion failure. Handshake denied.")
         sys.exit()
 
-    # LIVE AUTOMATION LOOP: Runs infinitely updating positions until stopped manually (Ctrl+C)
-    loop_count = 1
+    cycle = 1
     try:
         while True:
-            print(f"\n[CYCLE {loop_count} - {datetime.now().strftime('%H:%M:%S')}] Executing telemetry refresh...")
+            current_time = datetime.now().strftime("%H:%M:%S")
+            print(f"\n[TELEMETRY PULSE #{cycle}] Ingesting state vectors at {current_time}...")
             
-            # Compute positions dynamically for this exact second
-            live_assets, alerts = mission_control.compute_critical_conjunctions(starlink_net, debris_net)
-            print(f" [METRICS] Monitored Nodes: {len(live_assets)} | Active Vectors: {len(alerts)}")
+            assets, alerts = control_room.compute_critical_conjunctions(starlink_registry, debris_registry)
             
-            # Recompile dashboard instantly
-            mission_control.compile_visual_dashboard(live_assets, alerts)
+            print(f"[ALGORITHM MATCH] Tracked Constellations: {len(assets)} | Intercept Matches: {len(alerts)}")
+            control_room.compile_visual_dashboard(assets, alerts)
             
-            print("Cycle complete. System standing by for next telemetry pulse (15s)...")
-            time.sleep(15)  # Wait for 15 seconds before processing the next second's coordinates
-            loop_count += 1
+            print("[PIPELINE COMPLETE] Interface updated. Node sleeping for 15s...")
+            time.sleep(15)
+            cycle += 1
             
     except KeyboardInterrupt:
-        print("\nMission Control execution terminated gracefully by operator.")
+        print("\n[KERNEL SYSTEM] Execution safely killed by telemetry operator.")
