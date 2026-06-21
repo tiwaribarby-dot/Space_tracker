@@ -6,167 +6,134 @@ import folium
 import numpy as np
 from datetime import datetime, timezone
 from sgp4.api import Satrec, jday
-from openai import OpenAI
 
-class SpaceMissionControl:
-    def __init__(self, starlink_limit=80, debris_limit=60, threshold_km=1200.0):
-        self.starlink_limit = starlink_limit
-        self.debris_limit = debris_limit
+class HyperScaleMissionControl:
+    def __init__(self, threshold_km=1400.0):
         self.threshold_km = threshold_km
-        
-        # Core Network Configuration
-        self.api_key = os.environ.get("XAI_API_KEY")
-        self.client = OpenAI(api_key=self.api_key, base_url="https://api.x.ai/v1") if self.api_key else None
-
-    def get_satellite_position_now(self, sat_rec):
-        """Calculates precise 3D Cartesian coordinates using standard SGP4 propagation."""
-        now = datetime.now(timezone.utc)
-        jd, fr = jday(now.year, now.month, now.day, now.hour, now.minute, now.second + now.microsecond/1e6)
-
-        e, r, v = sat_rec.sgp4(jd, fr)
-        if e != 0:
-            return None
-
-        x, y, z = r[0], r[1], r[2]
-        r_mag = np.sqrt(x**2 + y**2 + z**2)
-
-        lat = np.degrees(np.arcsin(z / r_mag))
-        lon = np.degrees(np.arctan2(y, x))
-        alt = r_mag - 6378.137 
-
-        return {"latitude": lat, "longitude": lon, "altitude": alt, "x": x, "y": y, "z": z}
+        self.wgs84_r = 6378.137  # Earth's equatorial radius in km
 
     def fetch_orbital_registry(self, group_name):
-        """Pulls raw TLE streams asynchronously from the live NORAD/Celestrak endpoints."""
-        print(f"[INGESTION ENGINE] Fetching active element matrices for: '{group_name}'")
+        """Fetches TLE streams from CelesTrak and parses them into Satrec objects."""
         url = f"https://celestrak.org/NORAD/elements/gp.php?GROUP={group_name}&FORMAT=tle"
         try:
             response = requests.get(url, timeout=12)
-            if response.status_code != 200:
+            if response.status_code != 200: 
                 return []
-
+            
             lines = response.text.strip().split('\n')
-            satellites = []
-
-            for i in range(0, len(lines) - 2, 3):
-                name = lines[i].strip()
-                sat_rec = Satrec.twoline2rv(lines[i+1].strip(), lines[i+2].strip())
-                satellites.append({"name": name, "rec": sat_rec})
-
-            return satellites
+            return [
+                {
+                    "name": lines[i].strip(), 
+                    "rec": Satrec.twoline2rv(lines[i+1].strip(), lines[i+2].strip())
+                } 
+                for i in range(0, len(lines) - 2, 3)
+            ]
         except Exception as e:
-            print(f"[NET_ERROR] Handshake failed for registry {group_name}: {e}")
+            print(f"[ERROR] Registry fetch failed for {group_name}: {e}")
             return []
 
-    def compute_critical_conjunctions(self, starlinks, debris):
-        """Executes vectorized fast matrix distance evaluations across space telemetry profiles."""
-        conjunctions = []
-        starlink_positions = []
+    def compute_conjunctions_vectorized(self, starlinks, debris):
+        """
+        Calculates all combinations of distances instantly using Numpy Matrix Broadcasting.
+        O(N * M) operations executed entirely at C-speed.
+        """
+        now = datetime.now(timezone.utc)
+        jd, fr = jday(now.year, now.month, now.day, now.hour, now.minute, now.second + now.microsecond/1e6)
 
-        # Parse Active Node Coordinates
-        for s in starlinks[:self.starlink_limit]:
-            pos = self.get_satellite_position_now(s['rec'])
-            if pos:
-                pos['name'] = s['name']
-                starlink_positions.append(pos)
+        # 1. Gather 3D Cartesian coordinates (TEME Frame)
+        starlink_mats, valid_starlinks = [], []
+        for s in starlinks:
+            e, r, v = s['rec'].sgp4(jd, fr)
+            if e == 0:
+                starlink_mats.append(r)
+                valid_starlinks.append(s)
 
-        if not starlink_positions:
+        debris_mats, valid_debris = [], []
+        for d in debris:
+            e, r, v = d['rec'].sgp4(jd, fr)
+            if e == 0:
+                debris_mats.append(r)
+                valid_debris.append(d)
+
+        if not starlink_mats or not debris_mats:
             return [], []
 
-        # Vectorized Proximity Engine
-        for d in debris[:self.debris_limit]:
-            d_pos = self.get_satellite_position_now(d['rec'])
-            if not d_pos:
-                continue
+        # Convert to high-performance NumPy arrays
+        A = np.array(starlink_mats)  # Shape: (N, 3)
+        B = np.array(debris_mats)     # Shape: (M, 3)
 
-            # Parallel Calculation Loop via Matrix Array Structure
-            for s_pos in starlink_positions:
-                dist = np.sqrt((s_pos['x'] - d_pos['x'])**2 +
-                               (s_pos['y'] - d_pos['y'])**2 +
-                               (s_pos['z'] - d_pos['z'])**2)
+        # 2. Broadcasting Magic: Matrix Distance Evaluation
+        # Shape of diff becomes (N, M, 3) -> Delta X, Delta Y, Delta Z
+        diff = A[:, np.newaxis, :] - B[np.newaxis, :, :]
+        dist_matrix = np.linalg.norm(diff, axis=2)  # Shape: (N, M)
 
-                if dist < self.threshold_km:
-                    conjunctions.append({
-                        "satellite": s_pos['name'],
-                        "debris": d['name'],
-                        "distance_km": round(dist, 2),
-                        "sat_coords": (s_pos['latitude'], s_pos['longitude']),
-                        "deb_coords": (d_pos['latitude'], d_pos['longitude'])
-                    })
+        # 3. Quick boolean indexing to pull threat matches
+        sat_indices, debris_indices = np.where(dist_matrix < self.threshold_km)
 
-        return starlink_positions, conjunctions
-
-    def compile_visual_dashboard(self, starlinks, conjunctions):
-        """Generates a self-updating geospatial tracking map dashboard."""
-        mymap = folium.Map(location=[0, 0], zoom_start=2, tiles="CartoDB dark_matter")
-
-        # Map Working Node Framework
-        for s in starlinks:
-            folium.CircleMarker(
-                location=[s['latitude'], s['longitude']],
-                radius=3, color="#00D2FF", fill=True,
-                popup=f"Asset: {s['name']}<br>Altitude: {round(s['altitude'], 2)} km"
-            ).add_to(mymap)
-
-        # Map Dangerous Threat Vectors
-        for conj in conjunctions:
-            folium.Marker(
-                location=conj['deb_coords'],
-                popup=f"CONJUNCTION ALERT<br>Debris: {conj['debris']}<br>Miss Distance: {conj['distance_km']} km",
-                icon=folium.Icon(color="red", icon="warning-sign", prefix="glyphicon")
-            ).add_to(mymap)
-
-            folium.PolyLine(
-                locations=[conj['sat_coords'], conj['deb_coords']],
-                color="#FF2A2A", weight=2.0, dash_array="6, 6"
-            ).add_to(mymap)
-
-        output_file = "advanced_space_density_map.html"
-        mymap.save(output_file)
-        
-        # Injecting Automatic Head Meta-refresh to make UI live!
-        try:
-            with open(output_file, "r") as f:
-                html_content = f.read()
+        conjunctions = []
+        for s_idx, d_idx in zip(sat_indices, debris_indices):
+            dist = dist_matrix[s_idx, d_idx]
             
-            # This meta tag tells the browser to reload every 15 seconds automatically
-            meta_refresh = '<meta http-equiv="refresh" content="15">'
-            updated_html = html_content.replace("<head>", f"<head>\n    {meta_refresh}")
+            # Extract real position vectors for specific collision nodes
+            pos_a = A[s_idx]
+            pos_b = B[d_idx]
             
-            with open(output_file, "w") as f:
-                f.write(updated_html)
-        except Exception as e:
-            print(f"[UI ENGINE] Auto-refresh injection bypassed: {e}")
+            r_mag_a = np.linalg.norm(pos_a)
+            r_mag_b = np.linalg.norm(pos_b)
+
+            # Accurate coordinate parsing for UI mapping
+            sat_lat = np.degrees(np.arcsin(pos_a[2] / r_mag_a))
+            sat_lon = np.degrees(np.arctan2(pos_a[1], pos_a[0]))
+            
+            deb_lat = np.degrees(np.arcsin(pos_b[2] / r_mag_b))
+            deb_lon = np.degrees(np.arctan2(pos_b[1], pos_b[0]))
+
+            conjunctions.append({
+                "satellite": valid_starlinks[s_idx]['name'],
+                "debris": valid_debris[d_idx]['name'],
+                "distance_km": round(dist, 2),
+                "sat_coords": (sat_lat, sat_lon),
+                "deb_coords": (deb_lat, deb_lon)
+            })
+
+        # 4. Format asset coordinates for UI rendering
+        r_mag_all = np.linalg.norm(A, axis=1)
+        lats = np.degrees(np.arcsin(A[:, 2] / r_mag_all))
+        lons = np.degrees(np.arctan2(A[:, 1], A[:, 0]))
+        alts = r_mag_all - self.wgs84_r
+
+        assets_ui = [
+            {
+                "name": valid_starlinks[idx]['name'],
+                "latitude": lats[idx],
+                "longitude": lons[idx],
+                "altitude": alts[idx]
+            }
+            for idx in range(len(valid_starlinks))
+        ]
+
+        return assets_ui, conjunctions
 
 
-# --- RUNTIME CONTROL ROOM PIPELINE ---
+# --- REAL WORLD BENCHMARKING ---
 if __name__ == "__main__":
-    print("[KERNEL] INITIALIZING PRODUCTION SPACE VECTOR ENGINE v5.0\n")
+    print("[SYSTEM] Starting Vectorized Aerospace Compute Pipeline...\n")
+    control = HyperScaleMissionControl(threshold_km=1400.0)
     
-    # Increased target processing matrices for  optimization
-    control_room = SpaceMissionControl(starlink_limit=90, debris_limit=55, threshold_km=1400.0)
+    starlinks = control.fetch_orbital_registry("starlink")
+    debris = control.fetch_orbital_registry("cosmos-2251-debris")
     
-    starlink_registry = control_room.fetch_orbital_registry("starlink")
-    debris_registry = control_room.fetch_orbital_registry("cosmos-2251-debris")
+    if not starlinks or not debris:
+        print("[CRITICAL] Data streams offline. Exiting.")
+        sys.exit(1)
+        
+    print(f"[DATA] Ingested {len(starlinks)} Starlinks and {len(debris)} Debris Assets.")
     
-    if not starlink_registry or not debris_registry:
-        print(" [SYSTEM CRITICAL] Ingestion failure. Handshake denied.")
-        sys.exit()
-
-    cycle = 1
-    try:
-        while True:
-            current_time = datetime.now().strftime("%H:%M:%S")
-            print(f"\n[TELEMETRY PULSE #{cycle}] Ingesting state vectors at {current_time}...")
-            
-            assets, alerts = control_room.compute_critical_conjunctions(starlink_registry, debris_registry)
-            
-            print(f"[ALGORITHM MATCH] Tracked Constellations: {len(assets)} | Intercept Matches: {len(alerts)}")
-            control_room.compile_visual_dashboard(assets, alerts)
-            
-            print("[PIPELINE COMPLETE] Interface updated. Node sleeping for 15s...")
-            time.sleep(15)
-            cycle += 1
-            
-    except KeyboardInterrupt:
-        print("\n[KERNEL SYSTEM] Execution safely killed by telemetry operator.")
+    # Execution Check
+    t0 = time.time()
+    assets, alerts = control.compute_conjunctions_vectorized(starlinks, debris)
+    t1 = time.time()
+    
+    total_checks = len(starlinks) * len(debris)
+    print(f"\n[BENCHMARK] Evaluated {total_checks:,} combinations in {round(t1-t0, 4)} seconds.")
+    print(f"[ALERTS] Found {len(alerts)} critical conjunction threats within {control.threshold_km} km.")
